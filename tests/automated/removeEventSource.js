@@ -141,9 +141,12 @@ describe('removeEventSource', function() {
 		it('correctly removes events provided via `events` at initialization', function(done) {
 			var callCnt = 0;
 			options.eventAfterAllRender = function() {
-				if (!(callCnt++)) { // only the first time
+				callCnt++;
+				if (callCnt === 1) {
 					expectEventCnt(2);
 					$('#cal').fullCalendar('removeEventSource', eventInput);
+				}
+				else if (callCnt === 2) {
 					expectEventCnt(0);
 					done();
 				}
@@ -155,9 +158,12 @@ describe('removeEventSource', function() {
 		it('correctly removes events provided via `eventSources` at initialization', function(done) {
 			var callCnt = 0;
 			options.eventAfterAllRender = function() {
-				if (!(callCnt++)) { // only the first time
+				callCnt++;
+				if (callCnt === 1) {
 					expectEventCnt(2);
 					$('#cal').fullCalendar('removeEventSource', eventInput);
+				}
+				else if (callCnt === 2) {
 					expectEventCnt(0);
 					done();
 				}
@@ -169,15 +175,20 @@ describe('removeEventSource', function() {
 		it('correctly removes events provided via `addEventSource` method', function(done) {
 			var callCnt = 0;
 			options.eventAfterAllRender = function() {
-				if ((callCnt++) === 1) { // the second time (the first time is upon initial render)
+				callCnt++;
+				if (callCnt === 1) {
+					$('#cal').fullCalendar('addEventSource', eventInput);
+				}
+				else if (callCnt === 2) {
 					expectEventCnt(2);
 					$('#cal').fullCalendar('removeEventSource', eventInput);
+				}
+				else if (callCnt === 3) {
 					expectEventCnt(0);
 					done();
 				}
 			};
 			$('#cal').fullCalendar(options);
-			$('#cal').fullCalendar('addEventSource', eventInput);
 		});
 	}
 

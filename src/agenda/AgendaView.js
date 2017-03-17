@@ -290,23 +290,39 @@ var AgendaView = FC.AgendaView = View.extend({
 			top++; // to overcome top border that slots beyond the first have. looks better
 		}
 
-		return top;
+		return { top: top };
 	},
 
 
 	queryScroll: function() {
-		return this.scroller.getScrollTop();
+		return { top: this.scroller.getScrollTop() };
 	},
 
 
-	setScroll: function(top) {
-		this.scroller.setScrollTop(top);
+	setScroll: function(scroll) {
+		this.scroller.setScrollTop(scroll.top);
 	},
 
 
 	/* Hit Areas
 	------------------------------------------------------------------------------------------------------------------*/
 	// forward all hit-related method calls to the grids (dayGrid might not be defined)
+
+
+	hitsNeeded: function() {
+		this.timeGrid.hitsNeeded();
+		if (this.dayGrid) {
+			this.dayGrid.hitsNeeded();
+		}
+	},
+
+
+	hitsNotNeeded: function() {
+		this.timeGrid.hitsNotNeeded();
+		if (this.dayGrid) {
+			this.dayGrid.hitsNotNeeded();
+		}
+	},
 
 
 	prepareHits: function() {

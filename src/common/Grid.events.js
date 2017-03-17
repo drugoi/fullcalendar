@@ -179,16 +179,33 @@ Grid.mixin({
 
 	// Compute business hour segs for the grid's current date range.
 	// Caller must ask if whole-day business hours are needed.
-	buildBusinessHourSegs: function(wholeDay) {
-		var events = this.view.calendar.getCurrentBusinessHourEvents(wholeDay);
+	// If no `businessHours` configuration value is specified, assumes the calendar default.
+	buildBusinessHourSegs: function(wholeDay, businessHours) {
+		return this.eventsToSegs(
+			this.buildBusinessHourEvents(wholeDay, businessHours)
+		);
+	},
+
+
+	// Compute business hour *events* for the grid's current date range.
+	// Caller must ask if whole-day business hours are needed.
+	// If no `businessHours` configuration value is specified, assumes the calendar default.
+	buildBusinessHourEvents: function(wholeDay, businessHours) {
+		var calendar = this.view.calendar;
+		var events;
+
+		if (businessHours == null) {
+			// fallback
+			// access from calendawr. don't access from view. doesn't update with dynamic options.
+			businessHours = calendar.options.businessHours;
+		}
+
+		events = calendar.computeBusinessHourEvents(wholeDay, businessHours);
 
 		// HACK. Eventually refactor business hours "events" system.
 		// If no events are given, but businessHours is activated, this means the entire visible range should be
 		// marked as *not* business-hours, via inverse-background rendering.
-		if (
-			!events.length &&
-			this.view.calendar.options.businessHours // don't access view option. doesn't update with dynamic options
-		) {
+		if (!events.length && businessHours) {
 			events = [
 				$.extend({}, BUSINESS_HOUR_EVENT_DEFAULTS, {
 					start: this.view.end, // guaranteed out-of-range
@@ -198,7 +215,7 @@ Grid.mixin({
 			];
 		}
 
-		return this.eventsToSegs(events);
+		return events;
 	},
 
 
@@ -215,7 +232,6 @@ Grid.mixin({
 	// Attaches event-element-related handlers to an arbitrary container element. leverages bubbling.
 	bindSegHandlersToEl: function(el) {
 		this.bindSegHandlerToEl(el, 'touchstart', this.handleSegTouchStart);
-		this.bindSegHandlerToEl(el, 'touchend', this.handleSegTouchEnd);
 		this.bindSegHandlerToEl(el, 'mouseenter', this.handleSegMouseover);
 		this.bindSegHandlerToEl(el, 'mouseleave', this.handleSegMouseout);
 		this.bindSegHandlerToEl(el, 'mousedown', this.handleSegMousedown);
@@ -240,7 +256,7 @@ Grid.mixin({
 
 
 	handleSegClick: function(seg, ev) {
-		var res = this.view.trigger('eventClick', seg.el[0], seg.event, ev); // can return `false` to cancel
+		var res = this.view.publiclyTrigger('eventClick', seg.el[0], seg.event, ev); // can return `false` to cancel
 		if (res === false) {
 			ev.preventDefault();
 		}
@@ -250,14 +266,14 @@ Grid.mixin({
 	// Updates internal state and triggers handlers for when an event element is moused over
 	handleSegMouseover: function(seg, ev) {
 		if (
-			!this.isIgnoringMouse &&
+			!GlobalEmitter.get().shouldIgnoreMouse() &&
 			!this.mousedOverSeg
 		) {
 			this.mousedOverSeg = seg;
 			if (this.view.isEventResizable(seg.event)) {
 				seg.el.addClass('fc-allow-mouse-resize');
 			}
-			this.view.trigger('eventMouseover', seg.el[0], seg.event, ev);
+			this.view.publiclyTrigger('eventMouseover', seg.el[0], seg.event, ev);
 		}
 	},
 
@@ -273,7 +289,7 @@ Grid.mixin({
 			if (this.view.isEventResizable(seg.event)) {
 				seg.el.removeClass('fc-allow-mouse-resize');
 			}
-			this.view.trigger('eventMouseout', seg.el[0], seg.event, ev);
+			this.view.publiclyTrigger('eventMouseout', seg.el[0], seg.event, ev);
 		}
 	},
 
@@ -298,6 +314,7 @@ Grid.mixin({
 		var isResizable = view.isEventResizable(event);
 		var isResizing = false;
 		var dragListener;
+		var eventLongPressDelay;
 
 		if (isSelected && isResizable) {
 			// only allow resizing of the event is selected
@@ -306,24 +323,19 @@ Grid.mixin({
 
 		if (!isResizing && (isDraggable || isResizable)) { // allowed to be selected?
 
+			eventLongPressDelay = view.opt('eventLongPressDelay');
+			if (eventLongPressDelay == null) {
+				eventLongPressDelay = view.opt('longPressDelay'); // fallback
+			}
+
 			dragListener = isDraggable ?
 				this.buildSegDragListener(seg) :
 				this.buildSegSelectListener(seg); // seg isn't draggable, but still needs to be selected
 
 			dragListener.startInteraction(ev, { // won't start if already started
-				delay: isSelected ? 0 : this.view.opt('longPressDelay') // do delay if not already selected
+				delay: isSelected ? 0 : eventLongPressDelay // do delay if not already selected
 			});
 		}
-
-		// a long tap simulates a mouseover. ignore this bogus mouseover.
-		this.tempIgnoreMouse();
-	},
-
-
-	handleSegTouchEnd: function(seg, ev) {
-		// touchstart+touchend = click, which simulates a mouseover.
-		// ignore this bogus mouseover.
-		this.tempIgnoreMouse();
 	},
 
 
@@ -444,11 +456,15 @@ Grid.mixin({
 				mouseFollower.stop(!dropLocation, function() {
 					if (isDragging) {
 						view.unrenderDrag();
-						view.showEvent(event);
 						_this.segDragStop(seg, ev);
 					}
+
 					if (dropLocation) {
-						view.reportEventDrop(event, dropLocation, this.largeUnit, el, ev);
+						// no need to re-show original, will rerender all anyways. esp important if eventRenderWait
+						view.reportSegDrop(seg, dropLocation, _this.largeUnit, el, ev);
+					}
+					else {
+						view.showEvent(event);
 					}
 				});
 				_this.segDragListener = null;
@@ -490,14 +506,14 @@ Grid.mixin({
 	// Called before event segment dragging starts
 	segDragStart: function(seg, ev) {
 		this.isDraggingSeg = true;
-		this.view.trigger('eventDragStart', seg.el[0], seg.event, ev, {}); // last argument is jqui dummy
+		this.view.publiclyTrigger('eventDragStart', seg.el[0], seg.event, ev, {}); // last argument is jqui dummy
 	},
 
 
 	// Called after event segment dragging stops
 	segDragStop: function(seg, ev) {
 		this.isDraggingSeg = false;
-		this.view.trigger('eventDragStop', seg.el[0], seg.event, ev, {}); // last argument is jqui dummy
+		this.view.publiclyTrigger('eventDragStop', seg.el[0], seg.event, ev, {}); // last argument is jqui dummy
 	},
 
 
@@ -735,18 +751,23 @@ Grid.mixin({
 			},
 			hitOut: function() { // called before mouse moves to a different hit OR moved out of all hits
 				resizeLocation = null;
+				view.showEvent(event); // for when out-of-bounds. show original
 			},
 			hitDone: function() { // resets the rendering to show the original event
 				_this.unrenderEventResize();
-				view.showEvent(event);
 				enableCursor();
 			},
 			interactionEnd: function(ev) {
 				if (isDragging) {
 					_this.segResizeStop(seg, ev);
 				}
+
 				if (resizeLocation) { // valid date to resize to?
-					view.reportEventResize(event, resizeLocation, this.largeUnit, el, ev);
+					// no need to re-show original, will rerender all anyways. esp important if eventRenderWait
+					view.reportSegResize(seg, resizeLocation, _this.largeUnit, el, ev);
+				}
+				else {
+					view.showEvent(event);
 				}
 				_this.segResizeListener = null;
 			}
@@ -759,14 +780,14 @@ Grid.mixin({
 	// Called before event segment resizing starts
 	segResizeStart: function(seg, ev) {
 		this.isResizingSeg = true;
-		this.view.trigger('eventResizeStart', seg.el[0], seg.event, ev, {}); // last argument is jqui dummy
+		this.view.publiclyTrigger('eventResizeStart', seg.el[0], seg.event, ev, {}); // last argument is jqui dummy
 	},
 
 
 	// Called after event segment resizing stops
 	segResizeStop: function(seg, ev) {
 		this.isResizingSeg = false;
-		this.view.trigger('eventResizeStop', seg.el[0], seg.event, ev, {}); // last argument is jqui dummy
+		this.view.publiclyTrigger('eventResizeStop', seg.el[0], seg.event, ev, {}); // last argument is jqui dummy
 	},
 
 

@@ -78,10 +78,12 @@ Calendar.defaults = {
 	
 	//selectable: false,
 	unselectAuto: true,
+	//selectMinDistance: 0,
 	
 	dropAccept: '*',
 
 	eventOrder: 'title',
+	//eventRenderWait: null,
 
 	eventLimit: false,
 	eventLimitText: 'more',

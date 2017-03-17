@@ -238,12 +238,13 @@ function getContentRect(el, origin) {
 // NOTE: should use clientLeft/clientTop, but very unreliable cross-browser.
 function getScrollbarWidths(el) {
 	var leftRightWidth = el.innerWidth() - el[0].clientWidth; // the paddings cancel out, leaving the scrollbars
-	var widths = {
-		left: 0,
-		right: 0,
-		top: 0,
-		bottom: el.innerHeight() - el[0].clientHeight // the paddings cancel out, leaving the bottom scrollbar
-	};
+	var bottomWidth = el.innerHeight() - el[0].clientHeight; // "
+	var widths;
+
+	leftRightWidth = sanitizeScrollbarWidth(leftRightWidth);
+	bottomWidth = sanitizeScrollbarWidth(bottomWidth);
+
+	widths = { left: 0, right: 0, top: 0, bottom: bottomWidth };
 
 	if (getIsLeftRtlScrollbars() && el.css('direction') == 'rtl') { // is the scrollbar on the left side?
 		widths.left = leftRightWidth;
@@ -253,6 +254,15 @@ function getScrollbarWidths(el) {
 	}
 
 	return widths;
+}
+
+
+// The scrollbar width computations in getScrollbarWidths are sometimes flawed when it comes to
+// retina displays, rounding, and IE11. Massage them into a usable value.
+function sanitizeScrollbarWidth(width) {
+	width = Math.max(0, width); // no negatives
+	width = Math.round(width);
+	return width;
 }
 
 
@@ -306,24 +316,28 @@ function isPrimaryMouseButton(ev) {
 
 
 function getEvX(ev) {
-	if (ev.pageX !== undefined) {
-		return ev.pageX;
-	}
 	var touches = ev.originalEvent.touches;
-	if (touches) {
+
+	// on mobile FF, pageX for touch events is present, but incorrect,
+	// so, look at touch coordinates first.
+	if (touches && touches.length) {
 		return touches[0].pageX;
 	}
+
+	return ev.pageX;
 }
 
 
 function getEvY(ev) {
-	if (ev.pageY !== undefined) {
-		return ev.pageY;
-	}
 	var touches = ev.originalEvent.touches;
-	if (touches) {
+
+	// on mobile FF, pageX for touch events is present, but incorrect,
+	// so, look at touch coordinates first.
+	if (touches && touches.length) {
 		return touches[0].pageY;
 	}
+
+	return ev.pageY;
 }
 
 
@@ -338,33 +352,15 @@ function preventSelection(el) {
 }
 
 
+function allowSelection(el) {
+	el.removeClass('fc-unselectable')
+		.off('selectstart', preventDefault);
+}
+
+
 // Stops a mouse/touch event from doing it's native browser action
 function preventDefault(ev) {
 	ev.preventDefault();
-}
-
-
-// attach a handler to get called when ANY scroll action happens on the page.
-// this was impossible to do with normal on/off because 'scroll' doesn't bubble.
-// http://stackoverflow.com/a/32954565/96342
-// returns `true` on success.
-function bindAnyScroll(handler) {
-	if (window.addEventListener) {
-		window.addEventListener('scroll', handler, true); // useCapture=true
-		return true;
-	}
-	return false;
-}
-
-
-// undoes bindAnyScroll. must pass in the original function.
-// returns `true` on success.
-function unbindAnyScroll(handler) {
-	if (window.removeEventListener) {
-		window.removeEventListener('scroll', handler, true); // useCapture=true
-		return true;
-	}
-	return false;
 }
 
 
@@ -774,6 +770,7 @@ function createObject(proto) {
 	f.prototype = proto;
 	return new f();
 }
+FC.createObject = createObject;
 
 
 function copyOwnProps(src, dest) {
@@ -928,18 +925,4 @@ function debounce(func, wait, immediate) {
 		}
 		return result;
 	};
-}
-
-
-// HACK around jQuery's now A+ promises: execute callback synchronously if already resolved.
-// thenFunc shouldn't accept args.
-// similar to whenResources in Scheduler plugin.
-function syncThen(promise, thenFunc) {
-	// not a promise, or an already-resolved promise?
-	if (!promise || !promise.then || promise.state() === 'resolved') {
-		return $.when(thenFunc()); // resolve immediately
-	}
-	else if (thenFunc) {
-		return promise.then(thenFunc);
-	}
 }

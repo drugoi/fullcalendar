@@ -9,6 +9,7 @@ var Calendar = FC.Calendar = Class.extend({
 	viewSpecCache: null, // cache of view definitions
 	view: null, // current View object
 	header: null,
+	footer: null,
 	loadingLevel: 0, // number of simultaneous loading tasks
 
 
@@ -77,7 +78,7 @@ var Calendar = FC.Calendar = Class.extend({
 		if ($.inArray(unit, intervalUnits) != -1) {
 
 			// put views that have buttons first. there will be duplicates, but oh well
-			viewTypes = this.header.getViewsWithButtons();
+			viewTypes = this.header.getViewsWithButtons(); // TODO: include footer as well?
 			$.each(FC.views, function(viewType) { // all views
 				viewTypes.push(viewType);
 			});
@@ -224,7 +225,7 @@ var Calendar = FC.Calendar = Class.extend({
 	// Should be called when any type of async data fetching begins
 	pushLoading: function() {
 		if (!(this.loadingLevel++)) {
-			this.trigger('loading', null, true, this.view);
+			this.publiclyTrigger('loading', null, true, this.view);
 		}
 	},
 
@@ -232,7 +233,7 @@ var Calendar = FC.Calendar = Class.extend({
 	// Should be called when any type of async data fetching completes
 	popLoading: function() {
 		if (!(--this.loadingLevel)) {
-			this.trigger('loading', null, false, this.view);
+			this.publiclyTrigger('loading', null, false, this.view);
 		}
 	},
 
@@ -264,17 +265,16 @@ Calendar.mixin(EmitterMixin);
 function Calendar_constructor(element, overrides) {
 	var t = this;
 
+	// declare the current calendar instance relies on GlobalEmitter. needed for garbage collection.
+	GlobalEmitter.needed();
+
 
 	// Exports
 	// -----------------------------------------------------------------------------------
 
 	t.render = render;
 	t.destroy = destroy;
-	t.refetchEvents = refetchEvents;
-	t.refetchEventSources = refetchEventSources;
-	t.reportEvents = reportEvents;
-	t.reportEventChange = reportEventChange;
-	t.rerenderEvents = renderEvents; // `renderEvents` serves as a rerender. an API method
+	t.rerenderEvents = rerenderEvents;
 	t.changeView = renderView; // `renderView` will switch to another view
 	t.select = select;
 	t.unselect = unselect;
@@ -290,7 +290,7 @@ function Calendar_constructor(element, overrides) {
 	t.getCalendar = getCalendar;
 	t.getView = getView;
 	t.option = option; // getter/setter method
-	t.trigger = trigger;
+	t.publiclyTrigger = publiclyTrigger;
 	t.reinitView = reinitView;
 
 
@@ -490,9 +490,6 @@ function Calendar_constructor(element, overrides) {
 
 
 	EventManager.call(t);
-	var isFetchNeeded = t.isFetchNeeded;
-	var fetchEvents = t.fetchEvents;
-	var fetchEventSources = t.fetchEventSources;
 
 
 
@@ -501,7 +498,9 @@ function Calendar_constructor(element, overrides) {
 
 
 	var _element = element[0];
+	var toolbarsManager;
 	var header;
+	var footer;
 	var content;
 	var tm; // for making theme classes
 	var currentView; // NOTE: keep this in sync with this.view
@@ -509,7 +508,6 @@ function Calendar_constructor(element, overrides) {
 	var suggestedViewHeight;
 	var windowResizeProxy; // wraps the windowResize function
 	var ignoreWindowResize = 0;
-	var events = [];
 	var date; // unzoned
 
 
@@ -579,23 +577,19 @@ function Calendar_constructor(element, overrides) {
 
 		content = $("<div class='fc-view-container'/>").prependTo(element);
 
-		header = t.header = new Header(t);
-		renderHeader();
+		var toolbars = buildToolbars();
+		toolbarsManager = new Iterator(toolbars);
 
+		header = t.header = toolbars[0];
+		footer = t.footer = toolbars[1];
+
+		renderHeader();
+		renderFooter();
 		renderView(t.options.defaultView);
 
 		if (t.options.handleWindowResize) {
 			windowResizeProxy = debounce(windowResize, t.options.windowResizeDelay); // prevents rapid calls
 			$(window).resize(windowResizeProxy);
-		}
-	}
-
-
-	// can be called repeatedly and Header will rerender
-	function renderHeader() {
-		header.render();
-		if (header.el) {
-			element.prepend(header.el);
 		}
 	}
 
@@ -609,7 +603,7 @@ function Calendar_constructor(element, overrides) {
 			// It is still the "current" view, just not rendered.
 		}
 
-		header.removeElement();
+		toolbarsManager.proxyCall('removeElement');
 		content.remove();
 		element.removeClass('fc fc-ltr fc-rtl fc-unthemed ui-widget');
 
@@ -618,6 +612,8 @@ function Calendar_constructor(element, overrides) {
 		if (windowResizeProxy) {
 			$(window).unbind('resize', windowResizeProxy);
 		}
+
+		GlobalEmitter.unneeded();
 	}
 
 
@@ -634,11 +630,13 @@ function Calendar_constructor(element, overrides) {
 	// Renders a view because of a date change, view-type change, or for the first time.
 	// If not given a viewType, keep the current view but render different dates.
 	// Accepts an optional scroll state to restore to.
-	function renderView(viewType, explicitScrollState) {
+	function renderView(viewType, forcedScroll) {
 		ignoreWindowResize++;
 
+		var needsClearView = currentView && viewType && currentView.type !== viewType;
+
 		// if viewType is changing, remove the old view's rendering
-		if (currentView && viewType && currentView.type !== viewType) {
+		if (needsClearView) {
 			freezeContentHeight(); // prevent a scroll jump when view element is removed
 			clearView();
 		}
@@ -652,7 +650,7 @@ function Calendar_constructor(element, overrides) {
 			currentView.setElement(
 				$("<div class='fc-view fc-" + viewType + "-view' />").appendTo(content)
 			);
-			header.activateButton(viewType);
+			toolbarsManager.proxyCall('activateButton', viewType);
 		}
 
 		if (currentView) {
@@ -662,7 +660,7 @@ function Calendar_constructor(element, overrides) {
 
 			// render or rerender the view
 			if (
-				!currentView.displaying ||
+				!currentView.isDateSet ||
 				!( // NOT within interval range signals an implicit date window change
 					date >= currentView.intervalStart &&
 					date < currentView.intervalEnd
@@ -670,19 +668,27 @@ function Calendar_constructor(element, overrides) {
 			) {
 				if (elementVisible()) {
 
-					currentView.display(date, explicitScrollState); // will call freezeContentHeight
-					unfreezeContentHeight(); // immediately unfreeze regardless of whether display is async
+					if (forcedScroll) {
+						currentView.captureInitialScroll(forcedScroll);
+					}
+
+					currentView.setDate(date, forcedScroll);
+
+					if (forcedScroll) {
+						currentView.releaseScroll();
+					}
 
 					// need to do this after View::render, so dates are calculated
-					updateHeaderTitle();
-					updateTodayButton();
-
-					getAndRenderEvents();
+					// NOTE: view updates title text proactively
+					updateToolbarsTodayButton();
 				}
 			}
 		}
 
-		unfreezeContentHeight(); // undo any lone freezeContentHeight calls
+		if (needsClearView) {
+			thawContentHeight();
+		}
+
 		ignoreWindowResize--;
 	}
 
@@ -690,7 +696,7 @@ function Calendar_constructor(element, overrides) {
 	// Unrenders the current view and reflects this change in the Header.
 	// Unregsiters the `currentView`, but does not remove from viewByType hash.
 	function clearView() {
-		header.deactivateButton(currentView.type);
+		toolbarsManager.proxyCall('deactivateButton', currentView.type);
 		currentView.removeElement();
 		currentView = t.view = null;
 	}
@@ -706,9 +712,10 @@ function Calendar_constructor(element, overrides) {
 		var viewType = currentView.type;
 		var scrollState = currentView.queryScroll();
 		clearView();
+		calcSize();
 		renderView(viewType, scrollState);
 
-		unfreezeContentHeight();
+		thawContentHeight();
 		ignoreWindowResize--;
 	}
 
@@ -765,13 +772,13 @@ function Calendar_constructor(element, overrides) {
 			suggestedViewHeight = contentHeightInput();
 		}
 		else if (typeof heightInput === 'number') { // exists and not 'auto'
-			suggestedViewHeight = heightInput - queryHeaderHeight();
+			suggestedViewHeight = heightInput - queryToolbarsHeight();
 		}
 		else if (typeof heightInput === 'function') { // exists and is a function
-			suggestedViewHeight = heightInput() - queryHeaderHeight();
+			suggestedViewHeight = heightInput() - queryToolbarsHeight();
 		}
 		else if (heightInput === 'parent') { // set to height of parent element
-			suggestedViewHeight = element.parent().height() - queryHeaderHeight();
+			suggestedViewHeight = element.parent().height() - queryToolbarsHeight();
 		}
 		else {
 			suggestedViewHeight = Math.round(content.width() / Math.max(t.options.aspectRatio, .5));
@@ -779,8 +786,11 @@ function Calendar_constructor(element, overrides) {
 	}
 
 
-	function queryHeaderHeight() {
-		return header.el ? header.el.outerHeight(true) : 0; // includes margin
+	function queryToolbarsHeight() {
+		return toolbarsManager.items.reduce(function(accumulator, toolbar) {
+			var toolbarHeight = toolbar.el ? toolbar.el.outerHeight(true) : 0; // includes margin
+			return accumulator + toolbarHeight;
+		}, 0);
 	}
 
 
@@ -791,86 +801,85 @@ function Calendar_constructor(element, overrides) {
 			currentView.start // view has already been rendered
 		) {
 			if (updateSize(true)) {
-				currentView.trigger('windowResize', _element);
+				currentView.publiclyTrigger('windowResize', _element);
 			}
 		}
 	}
 
 
 
-	/* Event Fetching/Rendering
+	/* Event Rendering
 	-----------------------------------------------------------------------------*/
-	// TODO: going forward, most of this stuff should be directly handled by the view
 
 
-	function refetchEvents() { // can be called as an API method
-		fetchAndRenderEvents();
-	}
-
-
-	// TODO: move this into EventManager?
-	function refetchEventSources(matchInputs) {
-		fetchEventSources(t.getEventSourcesByMatchArray(matchInputs));
-	}
-
-
-	function renderEvents() { // destroys old events if previously rendered
+	function rerenderEvents() { // API method. destroys old events if previously rendered.
 		if (elementVisible()) {
-			freezeContentHeight();
-			currentView.displayEvents(events);
-			unfreezeContentHeight();
+			t.reportEventChange(); // will re-trasmit events to the view, causing a rerender
 		}
 	}
 
 
-	function getAndRenderEvents() {
-		if (!t.options.lazyFetching || isFetchNeeded(currentView.start, currentView.end)) {
-			fetchAndRenderEvents();
-		}
-		else {
-			renderEvents();
-		}
-	}
 
-
-	function fetchAndRenderEvents() {
-		fetchEvents(currentView.start, currentView.end);
-			// ... will call reportEvents
-			// ... which will call renderEvents
-	}
-
-
-	// called when event data arrives
-	function reportEvents(_events) {
-		events = _events;
-		renderEvents();
-	}
-
-
-	// called when a single event's data has been changed
-	function reportEventChange() {
-		renderEvents();
-	}
-
-
-
-	/* Header Updating
+	/* Toolbars
 	-----------------------------------------------------------------------------*/
 
 
-	function updateHeaderTitle() {
-		header.updateTitle(currentView.title);
+	function buildToolbars() {
+		return [
+			new Toolbar(t, computeHeaderOptions()),
+			new Toolbar(t, computeFooterOptions())
+		];
 	}
 
 
-	function updateTodayButton() {
-		var now = t.getNow();
+	function computeHeaderOptions() {
+		return {
+			extraClasses: 'fc-header-toolbar',
+			layout: t.options.header
+		};
+	}
 
+
+	function computeFooterOptions() {
+		return {
+			extraClasses: 'fc-footer-toolbar',
+			layout: t.options.footer
+		};
+	}
+
+
+	// can be called repeatedly and Header will rerender
+	function renderHeader() {
+		header.setToolbarOptions(computeHeaderOptions());
+		header.render();
+		if (header.el) {
+			element.prepend(header.el);
+		}
+	}
+
+
+	// can be called repeatedly and Footer will rerender
+	function renderFooter() {
+		footer.setToolbarOptions(computeFooterOptions());
+		footer.render();
+		if (footer.el) {
+			element.append(footer.el);
+		}
+	}
+
+
+	t.setToolbarsTitle = function(title) {
+		toolbarsManager.proxyCall('updateTitle', title);
+	};
+
+
+	function updateToolbarsTodayButton() {
+		var now = t.getNow();
 		if (now >= currentView.intervalStart && now < currentView.intervalEnd) {
-			header.disableButton('today');
+			toolbarsManager.proxyCall('disableButton', 'today');
 		}
 		else {
-			header.enableButton('today');
+			toolbarsManager.proxyCall('enableButton', 'today');
 		}
 	}
 
@@ -964,27 +973,33 @@ function Calendar_constructor(element, overrides) {
 
 	/* Height "Freezing"
 	-----------------------------------------------------------------------------*/
-	// TODO: move this into the view
+
 
 	t.freezeContentHeight = freezeContentHeight;
-	t.unfreezeContentHeight = unfreezeContentHeight;
+	t.thawContentHeight = thawContentHeight;
+
+	var freezeContentHeightDepth = 0;
 
 
 	function freezeContentHeight() {
-		content.css({
-			width: '100%',
-			height: content.height(),
-			overflow: 'hidden'
-		});
+		if (!(freezeContentHeightDepth++)) {
+			content.css({
+				width: '100%',
+				height: content.height(),
+				overflow: 'hidden'
+			});
+		}
 	}
 
 
-	function unfreezeContentHeight() {
-		content.css({
-			width: '',
-			height: '',
-			overflow: ''
-		});
+	function thawContentHeight() {
+		if (!(--freezeContentHeightDepth)) {
+			content.css({
+				width: '',
+				height: '',
+				overflow: ''
+			});
+		}
 	}
 
 
@@ -1058,19 +1073,20 @@ function Calendar_constructor(element, overrides) {
 			}
 			else if (optionName === 'timezone') {
 				t.rezoneArrayEventSources();
-				refetchEvents();
+				t.refetchEvents();
 				return;
 			}
 		}
 
-		// catch-all. rerender the header and rebuild/rerender the current view
+		// catch-all. rerender the header and footer and rebuild/rerender the current view
 		renderHeader();
+		renderFooter();
 		viewsByType = {}; // even non-current views will be affected by this option change. do before rerender
 		reinitView();
 	}
 
 
-	function trigger(name, thisObj) { // overrides the Emitter's trigger method :(
+	function publiclyTrigger(name, thisObj) {
 		var args = Array.prototype.slice.call(arguments, 2);
 
 		thisObj = thisObj || _element;

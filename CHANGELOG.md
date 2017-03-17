@@ -1,4 +1,48 @@
 
+v3.2.0 (2017-02-14)
+-------------------
+
+Features:
+- `selectMinDistance`, threshold before a mouse selection begins (#2428)
+
+Bugfixes:
+- iOS 10, unwanted scrolling while dragging events/selection (#3403)
+- dayClick triggered when swiping on touch devices (#3332)
+- dayClick not functioning on Firefix mobile (#3450)
+- title computed incorrectly for views with no weekends (#2884)
+- unwanted scrollbars in month-view when non-integer width (#3453, #3444)
+- incorrect date formatting for locales with non-standlone month/day names (#3478)
+- date formatting, incorrect omission of trailing period for certain locales (#2504, #3486)
+- formatRange should collapse same week numbers (#3467)
+- Taiwanese locale updated (#3426)
+- Finnish noEventsMessage updated (#3476)
+- Croatian (hr) buttonText is blank (#3270)
+- JSON feed PHP example, date range math bug (#3485)
+
+
+v3.1.0 (2016-12-05)
+-------------------
+
+- experimental support for implicitly batched ("debounced") event rendering (#2938)
+	- `eventRenderWait` (off by default)
+- new `footer` option, similar to header toolbar (#654, #3299)
+- event rendering batch methods (#3351):
+	- `renderEvents`
+	- `updateEvents`
+- more granular touch settings (#3377):
+	- `eventLongPressDelay`
+	- `selectLongPressDelay`
+- eventDestroy not called when removing the popover (#3416, #3419)
+- print stylesheet and gcal extension now offered as minified (#3415)
+- fc-today in agenda header cells (#3361, #3365)
+- height-related options in tandem with other options (#3327, #3384)
+- Kazakh locale (#3394)
+- Afrikaans locale (#3390)
+- internal refactor related to timing of rendering and firing handlers.
+  calls to rerender the current date-range and events from within handlers
+  might not execute immediately. instead, will execute after handler finishes.
+
+
 v3.0.1 (2016-09-26)
 -------------------
 

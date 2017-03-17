@@ -12,38 +12,39 @@ var eventGUID = 1;
 
 function EventManager() { // assumed to be a calendar
 	var t = this;
-	
-	
+
+
 	// exports
+	t.requestEvents = requestEvents;
+	t.reportEventChange = reportEventChange;
 	t.isFetchNeeded = isFetchNeeded;
 	t.fetchEvents = fetchEvents;
 	t.fetchEventSources = fetchEventSources;
+	t.refetchEvents = refetchEvents;
+	t.refetchEventSources = refetchEventSources;
 	t.getEventSources = getEventSources;
 	t.getEventSourceById = getEventSourceById;
-	t.getEventSourcesByMatchArray = getEventSourcesByMatchArray;
-	t.getEventSourcesByMatch = getEventSourcesByMatch;
 	t.addEventSource = addEventSource;
 	t.removeEventSource = removeEventSource;
 	t.removeEventSources = removeEventSources;
 	t.updateEvent = updateEvent;
+	t.updateEvents = updateEvents;
 	t.renderEvent = renderEvent;
+	t.renderEvents = renderEvents;
 	t.removeEvents = removeEvents;
 	t.clientEvents = clientEvents;
 	t.mutateEvent = mutateEvent;
 	t.normalizeEventDates = normalizeEventDates;
 	t.normalizeEventTimes = normalizeEventTimes;
-	
-	
-	// imports
-	var reportEvents = t.reportEvents;
-	
-	
+
+
 	// locals
 	var stickySource = { events: [] };
 	var sources = [ stickySource ];
 	var rangeStart, rangeEnd;
 	var pendingSourceCnt = 0; // outstanding fetch requests, max one per source
 	var cache = []; // holds events that have already been expanded
+	var prunedCache; // like cache, but only events that intersect with rangeStart/rangeEnd
 
 
 	$.each(
@@ -55,9 +56,55 @@ function EventManager() { // assumed to be a calendar
 			}
 		}
 	);
-	
-	
-	
+
+
+
+	function requestEvents(start, end) {
+		if (!t.options.lazyFetching || isFetchNeeded(start, end)) {
+			return fetchEvents(start, end);
+		}
+		else {
+			return Promise.resolve(prunedCache);
+		}
+	}
+
+
+	function reportEventChange() {
+		prunedCache = filterEventsWithinRange(cache);
+		t.trigger('eventsReset', prunedCache);
+	}
+
+
+	function filterEventsWithinRange(events) {
+		var filteredEvents = [];
+		var i, event;
+
+		for (i = 0; i < events.length; i++) {
+			event = events[i];
+
+			if (
+				event.start.clone().stripZone() < rangeEnd &&
+				t.getEventEnd(event).stripZone() > rangeStart
+			) {
+				filteredEvents.push(event);
+			}
+		}
+
+		return filteredEvents;
+	}
+
+
+	t.getEventCache = function() {
+		return cache;
+	};
+
+
+	t.getPrunedEventCache = function() {
+		return prunedCache;
+	};
+
+
+
 	/* Fetching
 	-----------------------------------------------------------------------------*/
 
@@ -67,12 +114,24 @@ function EventManager() { // assumed to be a calendar
 		return !rangeStart || // nothing has been fetched yet?
 			start < rangeStart || end > rangeEnd; // is part of the new range outside of the old range?
 	}
-	
-	
+
+
 	function fetchEvents(start, end) {
 		rangeStart = start;
 		rangeEnd = end;
-		fetchEventSources(sources, 'reset');
+		return refetchEvents();
+	}
+
+
+	// poorly named. fetches all sources with current `rangeStart` and `rangeEnd`.
+	function refetchEvents() {
+		return fetchEventSources(sources, 'reset');
+	}
+
+
+	// poorly named. fetches a subset of event sources.
+	function refetchEventSources(matchInputs) {
+		return fetchEventSources(getEventSourcesByMatchArray(matchInputs));
 	}
 
 
@@ -102,8 +161,16 @@ function EventManager() { // assumed to be a calendar
 
 		for (i = 0; i < specificSources.length; i++) {
 			source = specificSources[i];
-
 			tryFetchEventSource(source, source._fetchId);
+		}
+
+		if (pendingSourceCnt) {
+			return new Promise(function(resolve) {
+				t.one('eventsReceived', resolve); // will send prunedCache
+			});
+		}
+		else { // executed all synchronously, or no sources at all
+			return Promise.resolve(prunedCache);
 		}
 	}
 
@@ -137,7 +204,7 @@ function EventManager() { // assumed to be a calendar
 						}
 
 						if (abstractEvent) { // not false (an invalid event)
-							cache.push.apply(
+							cache.push.apply( // append
 								cache,
 								expandEvent(abstractEvent) // add individual expanded events to the cache
 							);
@@ -165,11 +232,12 @@ function EventManager() { // assumed to be a calendar
 	function decrementPendingSourceCnt() {
 		pendingSourceCnt--;
 		if (!pendingSourceCnt) {
-			reportEvents(cache);
+			reportEventChange(cache); // updates prunedCache
+			t.trigger('eventsReceived', prunedCache);
 		}
 	}
-	
-	
+
+
 	function _fetchEventSource(source, callback) {
 		var i;
 		var fetchers = FC.sourceFetchers;
@@ -278,9 +346,9 @@ function EventManager() { // assumed to be a calendar
 			}
 		}
 	}
-	
-	
-	
+
+
+
 	/* Sources
 	-----------------------------------------------------------------------------*/
 
@@ -289,7 +357,7 @@ function EventManager() { // assumed to be a calendar
 		var source = buildEventSource(sourceInput);
 		if (source) {
 			sources.push(source);
-			fetchEventSources([ source ], 'add'); // will eventually call reportEvents
+			fetchEventSources([ source ], 'add'); // will eventually call reportEventChange
 		}
 	}
 
@@ -385,7 +453,7 @@ function EventManager() { // assumed to be a calendar
 			cache = excludeEventsBySources(cache, targetSources);
 		}
 
-		reportEvents(cache);
+		reportEventChange();
 	}
 
 
@@ -479,27 +547,39 @@ function EventManager() { // assumed to be a calendar
 			return true; // keep
 		});
 	}
-	
-	
-	
+
+
+
 	/* Manipulation
 	-----------------------------------------------------------------------------*/
 
 
 	// Only ever called from the externally-facing API
 	function updateEvent(event) {
+		updateEvents([ event ]);
+	}
 
-		// massage start/end values, even if date string values
-		event.start = t.moment(event.start);
-		if (event.end) {
-			event.end = t.moment(event.end);
-		}
-		else {
-			event.end = null;
+
+	// Only ever called from the externally-facing API
+	function updateEvents(events) {
+		var i, event;
+
+		for (i = 0; i < events.length; i++) {
+			event = events[i];
+
+			// massage start/end values, even if date string values
+			event.start = t.moment(event.start);
+			if (event.end) {
+				event.end = t.moment(event.end);
+			}
+			else {
+				event.end = null;
+			}
+
+			mutateEvent(event, getMiscEventProps(event)); // will handle start/end/allDay normalization
 		}
 
-		mutateEvent(event, getMiscEventProps(event)); // will handle start/end/allDay normalization
-		reportEvents(cache); // reports event modifications (so we can redraw)
+		reportEventChange(); // reports event modifications (so we can redraw)
 	}
 
 
@@ -523,37 +603,50 @@ function EventManager() { // assumed to be a calendar
 		return !/^_|^(id|allDay|start|end)$/.test(name);
 	}
 
-	
+
 	// returns the expanded events that were created
 	function renderEvent(eventInput, stick) {
-		var abstractEvent = buildEventFromInput(eventInput);
-		var events;
-		var i, event;
+		return renderEvents([ eventInput ], stick);
+	}
 
-		if (abstractEvent) { // not false (a valid input)
-			events = expandEvent(abstractEvent);
 
-			for (i = 0; i < events.length; i++) {
-				event = events[i];
+	// returns the expanded events that were created
+	function renderEvents(eventInputs, stick) {
+		var renderedEvents = [];
+		var renderableEvents;
+		var abstractEvent;
+		var i, j, event;
 
-				if (!event.source) {
-					if (stick) {
-						stickySource.events.push(event);
-						event.source = stickySource;
+		for (i = 0; i < eventInputs.length; i++) {
+			abstractEvent = buildEventFromInput(eventInputs[i]);
+
+			if (abstractEvent) { // not false (a valid input)
+				renderableEvents = expandEvent(abstractEvent);
+
+				for (j = 0; j < renderableEvents.length; j++) {
+					event = renderableEvents[j];
+
+					if (!event.source) {
+						if (stick) {
+							stickySource.events.push(event);
+							event.source = stickySource;
+						}
+						cache.push(event);
 					}
-					cache.push(event);
 				}
+
+				renderedEvents = renderedEvents.concat(renderableEvents);
 			}
-
-			reportEvents(cache);
-
-			return events;
 		}
 
-		return [];
+		if (renderedEvents.length) { // any new events rendered?
+			reportEventChange();
+		}
+
+		return renderedEvents;
 	}
-	
-	
+
+
 	function removeEvents(filter) {
 		var eventID;
 		var i;
@@ -580,10 +673,10 @@ function EventManager() { // assumed to be a calendar
 			}
 		}
 
-		reportEvents(cache);
+		reportEventChange();
 	}
 
-	
+
 	function clientEvents(filter) {
 		if ($.isFunction(filter)) {
 			return $.grep(cache, filter);
@@ -623,8 +716,8 @@ function EventManager() { // assumed to be a calendar
 		}
 		backupEventDates(event);
 	}
-	
-	
+
+
 	/* Event Normalization
 	-----------------------------------------------------------------------------*/
 
@@ -1034,12 +1127,13 @@ function EventManager() { // assumed to be a calendar
 		};
 	}
 
-
-	t.getEventCache = function() {
-		return cache;
-	};
-
 }
+
+
+// returns an undo function
+Calendar.prototype.mutateSeg = function(seg, newProps) {
+	return this.mutateEvent(seg.event, newProps);
+};
 
 
 // hook for external libs to manipulate event properties upon creation.
